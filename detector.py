@@ -6,7 +6,6 @@ from config import TRACKED_ACCOUNTS, LIMIT_PHRASES
 
 _LIMIT_RE = re.compile("|".join(re.escape(p) for p in LIMIT_PHRASES), re.IGNORECASE)
 
-# Require strict contextual keywords or date association so it never picks up random times
 _TIME_RE = re.compile(
     r"""
     (?:limit\s*)?(?:resets?|until|at|on)\s*
@@ -33,16 +32,13 @@ def looks_like_limit_message(text):
 
 
 def extract_reset_time_raw(text):
-    """Extracts reset time using strict contextual matching."""
-    # Search specifically near limit phrases or inside lines containing reset indicators
     for line in text.splitlines():
-        if any(k in line for k in ("reset", "until", "Limit")):
+        if any(k in line for k in ("reset", "until", "Limit", "out of free messages")):
             for m in _TIME_RE.finditer(line):
                 val = m.group(1).strip()
                 if val:
                     return val
 
-    # Fallback search across the whole text with the strict pattern
     for m in _TIME_RE.finditer(text):
         if not _is_from_tracker_gui(text, m.start(), m.end()):
             val = m.group(1).strip()
@@ -79,17 +75,25 @@ def try_parse_reset_time(raw, now=None):
 
 def detect_account(text):
     """
-    Directly maps display names to accounts, falling back to proximity matching.
+    Strictly disambiguates accounts, prioritizing longer/specific matches
+    to prevent cross-triggering between tsannasardo and tsannasardo2.
     """
-    if "Thomas 2" in text or "tsannasardo2" in text:
+    # Check account 2 first (since account 1 is a substring prefix)
+    if any(k in text for k in ("Thomas 2", "tsannasardo2", "Tsann2")):
         if "tsannasardo2@gmail.com" in TRACKED_ACCOUNTS:
             return "tsannasardo2@gmail.com"
 
-    if re.search(r'\bThomas\b', text) and not re.search(r'\bThomas\s*2\b', text):
+    # Check account 1 explicitly ensuring '2' is absent
+    if (any(k in text for k in ("Thomas 1", "tsannasardo1", "Tsann1")) or
+        (re.search(r'\bThomas\b', text) and not re.search(r'\bThomas\s*2\b', text)) or
+        (re.search(r'\bTsann1\b', text))):
         if "tsannasardo@gmail.com" in TRACKED_ACCOUNTS:
-            return "tsannasardo@gmail.com"
+            if not re.search(r'tsannasardo2', text, re.IGNORECASE) and not re.search(r'Tsann2', text):
+                return "tsannasardo@gmail.com"
 
-    for account in TRACKED_ACCOUNTS:
+    # Sort accounts by length descending so longer/specific emails match before shorter prefixes
+    sorted_accounts = sorted(TRACKED_ACCOUNTS, key=len, reverse=True)
+    for account in sorted_accounts:
         pattern = r'(?<![a-zA-Z0-9])' + re.escape(account) + r'(?![a-zA-Z0-9])'
         if re.search(pattern, text, re.IGNORECASE):
             return account
@@ -105,7 +109,6 @@ def detect_account(text):
 
     limit_idx = limit_match.start()
     found = {}
-    sorted_accounts = sorted(TRACKED_ACCOUNTS, key=len, reverse=True)
 
     for account in sorted_accounts:
         if "punksm4ck" in account and "punksm4ck@" not in account:

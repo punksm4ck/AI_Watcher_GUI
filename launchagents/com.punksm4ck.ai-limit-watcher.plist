@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.punksm4ck.ai-limit-watcher</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>__PYTHON_BIN__</string>
+        <string>__INSTALL_DIR__/watcher.py</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>__INSTALL_DIR__</string>
+
+    <!-- Starts the watcher as soon as this agent is loaded (at login). -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- Restarts the watcher automatically if it ever crashes or exits. -->
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>__APP_SUPPORT_DIR__/watcher.stdout.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>__APP_SUPPORT_DIR__/watcher.stderr.log</string>
+</dict>
+</plist>

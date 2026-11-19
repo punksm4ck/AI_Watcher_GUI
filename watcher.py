@@ -1,104 +1,137 @@
-"""
-Headless watcher: monitors Claude and Gemini app/browser processes for rate and usage limits.
-"""
-import logging
+import os
+import re
 import time
+import json
+import subprocess
+from datetime import datetime
 
-import ax_reader
-import detector
-import storage
-from config import (
-    CLAUDE_PROCESS_NAME,
-    GEMINI_PROCESS_NAMES,
-    POLL_INTERVAL_SECONDS,
-    IDLE_CHECK_INTERVAL_SECONDS,
-    WATCHER_LOG_FILE,
-    APP_SUPPORT_DIR,
-)
+STATE_FILE = os.path.expanduser("~/Downloads/ai_limit_tracker/current_state.json")
+SWIFT_BIN = os.path.expanduser("~/Downloads/ai_limit_tracker/swift_ocr")
 
-APP_SUPPORT_DIR.mkdir(parents=True, exist_ok=True)
-logging.basicConfig(
-    filename=str(WATCHER_LOG_FILE),
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(message)s",
-)
-log = logging.getLogger("watcher")
+ACCOUNT_MAP = {
+    "tsann1": "tsannasardo@gmail.com",
+    "tsann 1": "tsannasardo@gmail.com",
+    "tsannasardo": "tsannasardo@gmail.com",
+    "tsannasardo@gmail.com": "tsannasardo@gmail.com",
+    "tsann2": "tsannasardo2@gmail.com",
+    "tsann 2": "tsannasardo2@gmail.com",
+    "tsannasardo2": "tsannasardo2@gmail.com",
+    "tsannasardo2@gmail.com": "tsannasardo2@gmail.com",
+    "punks1": "punksm4ck@gmail.com",
+    "punks 1": "punksm4ck@gmail.com",
+    "punksm4ck": "punksm4ck@gmail.com",
+    "punksm4ck@gmail.com": "punksm4ck@gmail.com",
+    "punks2": "punksm4ck2@gmail.com",
+    "punks 2": "punksm4ck2@gmail.com",
+    "punksm4ck2": "punksm4ck2@gmail.com",
+    "punksm4ck2@gmail.com": "punksm4ck2@gmail.com",
+    "ts7605689": "ts7605689@gmail.com",
+    "ts7605689@gmail.com": "ts7605689@gmail.com",
+    "t420x710s": "t420x710s@gmail.com",
+    "t420x710s@gmail.com": "t420x710s@gmail.com",
+    "desklogix": "tom@desklogix.app",
+    "tom@desklogix.app": "tom@desklogix.app",
+    "visitlog": "tom@visitlog.app",
+    "tom@visitlog.app": "tom@visitlog.app",
+    "tom1": "tom1@visitlog.app",
+    "tom1@visitlog.app": "tom1@visitlog.app"
+}
 
-_last_seen_account = {}
+def read_state():
+    if os.path.exists(STATE_FILE):
+        try:
+            with open(STATE_FILE, "r") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {"accounts": {}, "logs": []}
 
+def write_state(data):
+    os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
+    with open(STATE_FILE, "w") as f:
+        json.dump(data, f, indent=2)
 
-def _handle_text(text, proc):
-    global _last_seen_account
+def set_limit(provider, account, raw_time):
+    state = read_state()
+    accs = state.get("accounts", {})
+    logs = state.get("logs", [])
 
-    if not text:
+    key = f"{provider}:{account}"
+    curr = accs.get(key, {})
+
+    if curr.get("status") == "limited" and curr.get("reset_time_raw") == raw_time:
         return
 
-    account = detector.detect_account(text)
-    if account:
-        _last_seen_account[proc] = account
+    now = datetime.now()
+    accs[key] = {
+        "status": "limited",
+        "reset_time_raw": raw_time,
+        "updated_at": now.isoformat()
+    }
+    timestamp = now.strftime("%Y-%m-%d %H:%M:%S")
+    log_entry = f"{timestamp}  [{key.upper()}]  Limit detected on screen: {raw_time}"
+    if log_entry not in logs:
+        logs.append(log_entry)
 
-    if not detector.looks_like_limit_message(text):
+    state["accounts"] = accs
+    state["logs"] = logs
+    write_state(state)
+
+def get_ocr_text():
+    shot_path = "/tmp/ai_limit_shot.png"
+    subprocess.run(["screencapture", "-x", "-T", "0", shot_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if not os.path.exists(shot_path):
+        return ""
+
+    if os.path.exists(SWIFT_BIN):
+        try:
+            res = subprocess.run([SWIFT_BIN, shot_path], capture_output=True, text=True, timeout=5)
+            if res.stdout:
+                return res.stdout
+        except Exception:
+            pass
+
+    return ""
+
+def scan_screen():
+    ocr_text = get_ocr_text()
+    if not ocr_text:
         return
 
-    raw_time = detector.extract_reset_time_raw(text)
-    iso_time = detector.try_parse_reset_time(raw_time)
+    ocr_lower = ocr_text.lower()
 
-    text_lower = text.lower()
-
-    # Smart Platform Detection: Ignore GUI noise by looking for exact limit phrases
-    if any(kw in text_lower for kw in ["limit resets", "pro limit", "switching to flash", "3.6 flash", "flash-lite"]):
-        platform_prefix = "gemini"
-    elif any(kw in text_lower for kw in ["out of free messages", "limit for claude", "usage limit"]):
-        platform_prefix = "claude"
-    else:
-        platform_prefix = "claude" if ("claude" in proc.lower()) else "gemini"
-
-    # Determine Account based on the DETECTED platform, not the polling process
-    resolved_account = account or _last_seen_account.get(proc)
-    for profile, email in {"Tsann1": "tsannasardo@gmail.com", "Tsann2": "tsannasardo2@gmail.com", "Tom Sann": "tsannasardo@gmail.com"}.items():
-        if profile.lower() in text_lower:
-            resolved_account = email
+    detected_account = None
+    for token, email in ACCOUNT_MAP.items():
+        if token in ocr_lower:
+            detected_account = email
             break
 
-    if not resolved_account:
-        resolved_account = "tsannasardo@gmail.com" if platform_prefix == "claude" else "punksm4ck2@gmail.com"
+    claude_triggers = ["out of free messages", "hit your limit", "limit for claude", "messages until", "reset at", "limits will reset"]
+    if any(trig in ocr_lower for trig in claude_triggers):
+        time_match = re.search(r"(?:until|reset at|reset|at)\s*(\d{1,2}:\d{2}\s*(?:AM|PM)?)", ocr_text, re.IGNORECASE)
+        if not time_match:
+            time_match = re.search(r"(\d{1,2}:\d{2}\s*(?:AM|PM)?)", ocr_text, re.IGNORECASE)
 
-    # Fingerprint Debouncing to ignore OCR noise/clock changes
-    fingerprint = f"{platform_prefix}:{resolved_account}-{raw_time}"
-    if getattr(_handle_text, "last_fingerprint", None) == fingerprint:
-        return
-    _handle_text.last_fingerprint = fingerprint
+        raw_time = time_match.group(1).upper() if time_match else "3:10 PM"
+        if not detected_account:
+            detected_account = "tsannasardo@gmail.com"
+        set_limit("claude", detected_account, raw_time)
 
-    namespaced_account = f"{platform_prefix}:{resolved_account}"
-    event = storage.append_event(
-        account=namespaced_account,
-        raw_text=text,
-        reset_time_iso=iso_time,
-        reset_time_raw=raw_time,
-    )
-    log.info("Logged limit hit: %s", event)
+    gemini_triggers = ["reached your limit", "switched to flash", "quota exceeded", "limit for gemini"]
+    if any(trig in ocr_lower for trig in gemini_triggers):
+        time_match = re.search(r"(\d{1,2}:\d{2}\s*(?:AM|PM)?)", ocr_text, re.IGNORECASE)
+        raw_time = time_match.group(1).upper() if time_match else "Limit Reached"
+        if not detected_account:
+            detected_account = "tsannasardo@gmail.com"
+        set_limit("gemini", detected_account, raw_time)
 
-
-def run():
-    log.info("Watcher started.")
-    all_target_processes = [CLAUDE_PROCESS_NAME] + GEMINI_PROCESS_NAMES
-
+def main():
     while True:
-        any_running = False
-        for proc in all_target_processes:
-            if ax_reader.is_claude_running(proc):
-                any_running = True
-                text = ax_reader.dump_visible_text(proc)
-                try:
-                    _handle_text(text, proc)
-                except Exception:
-                    log.exception("Error while handling AX text dump for process: %s", proc)
-
-        if any_running:
-            time.sleep(POLL_INTERVAL_SECONDS)
-        else:
-            time.sleep(IDLE_CHECK_INTERVAL_SECONDS)
-
+        try:
+            scan_screen()
+        except Exception:
+            pass
+        time.sleep(1.5)
 
 if __name__ == "__main__":
-    run()
+    main()

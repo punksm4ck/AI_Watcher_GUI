@@ -1,3 +1,5 @@
 pyobjc-framework-ApplicationServices
 pyobjc-framework-Quartz
 pyobjc-framework-Cocoa
+customtkinter
+pyobjc-framework-Vision
